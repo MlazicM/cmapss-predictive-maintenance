@@ -29,8 +29,10 @@ async def lifespan(app: FastAPI):
     try:
         state["predictor"] = RULPredictor.from_artifacts(MODEL_NAME)
         logger.info("loaded artifacts for %s", MODEL_NAME)
-    except (FileNotFoundError, OSError, ImportError) as exc:
-        # Train and save a model first: notebooks/02_baseline_models.ipynb.
+    except Exception as exc:  # noqa: BLE001
+        # Deliberately broad: every loading failure must degrade to a 503 rather
+        # than take the process down. A narrow tuple missed Keras's ValueError
+        # for an absent .keras path and crashed startup instead.
         logger.warning("no model artifacts available (%s); /predict will return 503", exc)
     yield
     state["predictor"] = None
