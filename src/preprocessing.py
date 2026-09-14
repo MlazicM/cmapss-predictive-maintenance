@@ -13,6 +13,7 @@ from src.config import (
     RANDOM_SEED,
     SEQUENCE_LENGTH,
     SETTING_COLUMNS,
+    SUBSET_INFO,
 )
 
 
@@ -33,6 +34,18 @@ def apply_scaler(scaler, df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
     out = df.copy()
     out[features] = scaler.transform(df[features])
     return out
+
+
+def scaler_for_subset(subset: str, seed: int = RANDOM_SEED) -> "ConditionScaler":
+    """Return a scaler matched to the subset's number of operating regimes.
+
+    Picking this by hand is exactly the mistake that made the first transfer
+    experiment uninterpretable: single-condition FD001 was pushed through
+    statistics fitted on six-condition FD002. Deriving it from the subset name
+    removes the choice.
+    """
+    regimes = SUBSET_INFO[subset]["regimes"]
+    return ConditionScaler(n_regimes=regimes, seed=seed)
 
 
 class ConditionScaler:

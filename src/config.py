@@ -39,3 +39,15 @@ RANDOM_SEED = 42
 
 # FD002 and FD004 are recorded under six discrete operating regimes.
 N_OPERATING_REGIMES = 6
+
+# What each benchmark subset actually contains. The regime count decides how a
+# subset must be normalised: on the six-regime subsets the operating condition
+# moves the sensors far more than degradation does, so a single global scaler
+# mostly encodes "which regime is this" and drowns the signal.
+SUBSET_INFO = {
+    "FD001": {"regimes": 1, "faults": 1, "train_engines": 100},
+    "FD002": {"regimes": 6, "faults": 1, "train_engines": 260},
+    "FD003": {"regimes": 1, "faults": 2, "train_engines": 100},
+    "FD004": {"regimes": 6, "faults": 2, "train_engines": 249},
+}
+SUBSETS = list(SUBSET_INFO)
