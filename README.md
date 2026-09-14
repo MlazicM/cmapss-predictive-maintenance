@@ -14,16 +14,34 @@ End-to-end predictive maintenance system for estimating the **Remaining Useful L
 
 ---
 
-## ⚠️ Status: results are being re-measured
+## 📊 Results — FD001
 
-The evaluation protocol and two experiment designs were found to be unsound and have been rebuilt. **No metrics are quoted in this README until the notebooks have been re-run end to end under the corrected protocol.** The previously published table came from a setup where:
+Measured on the **official test split** (`test_FD001` + `RUL_FD001`), one prediction per engine, n = 100. Training and early stopping used disjoint splits of `train_FD001`; the test files were touched once, for this table.
+
+| Model | RMSE ↓ | MAE ↓ | R² ↑ | NASA score ↓ |
+|---|---|---|---|---|
+| XGBoost — per-cycle features | 18.19 | 12.56 | 0.79 | 1861.6 |
+| **XGBoost — rolling features** | **12.38** | **9.31** | **0.90** | **237.0** |
+| LSTM (30-cycle windows) | 14.84 | 11.33 | 0.86 | 440.1 |
+
+Reproduce with `python scripts/run_experiments.py --stage baselines`.
+
+**The tree wins once it is given the same temporal information as the LSTM.** Adding rolling mean/std and drift cuts XGBoost's RMSE by 32% (18.19 → 12.38) and its NASA score by 87%, moving it past the sequence model on both. The earlier claim that the LSTM beat XGBoost by 24% compared it against the per-cycle variant, which structurally cannot represent a trend — that gap measured the input representation, not the model class.
+
+The asymmetric NASA score separates the two models much more sharply than RMSE does (237 vs 440, a 1.9x gap against 1.2x on RMSE), because it charges for *late* predictions — the ones where an engine fails before its scheduled maintenance. On this benchmark that is the number a maintenance planner would optimise.
+
+FD001 is the easiest C-MAPSS subset: one operating condition, one fault mode. A well-featurised tree being competitive here does not imply the same on the multi-condition subsets, which is what Phase 4 probes.
+
+### Still to be measured
+
+Phases 3 and 4 — label scarcity, augmentation and transfer learning — have been rebuilt but not yet re-run. **No numbers are quoted for them** until they are. The previously published figures came from a setup where:
 
 - the reported score was computed on the same split that drove early stopping, and the official `test_FD001` / `RUL_FD001` files were loaded but never used;
 - the "limited data" scenario kept the first 30% of each engine's cycles, which after clipping at RUL 125 put **93.7% of retained rows exactly on the cap** and left 74% of engines with no label other than 125 — the model was fitted on a near-constant target and scored across the full range;
 - the augmentation experiment had no un-augmented control arm, added noise at 1% of one standard deviation, and built sliding windows across the seam between concatenated copies;
 - the transfer-learning run normalised single-condition FD001 with a scaler fitted on six-condition FD002, and compared a fully fine-tuned network against a frozen one as though they were the same run.
 
-Details in [`docs/METHODOLOGY_FIXES.md`](docs/METHODOLOGY_FIXES.md). Everything is fixed in the code and covered by tests; what remains is the compute. Publishing numbers produced by a protocol I know to be broken would be worse than publishing none.
+Details in [`docs/METHODOLOGY_FIXES.md`](docs/METHODOLOGY_FIXES.md). All four are fixed in code and covered by tests; what remains is the compute.
 
 ---
 
@@ -189,7 +207,8 @@ Training engines run to failure. Test engines are truncated before failure, with
 - [x] Regime-aware transfer learning (FD002 → FD001)
 - [x] MC-dropout uncertainty bounds
 - [x] FastAPI inference service
-- [ ] **Re-run all notebooks and publish the measured results**
+- [x] Measure and publish the FD001 baselines
+- [ ] **Re-run the scarcity and transfer phases and publish those results**
 - [ ] FD003/FD004 (multi-fault, multi-condition)
 - [ ] Calibrated intervals (quantile regression or deep ensembles)
 - [ ] Dockerised inference service
