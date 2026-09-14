@@ -142,3 +142,40 @@ def test_predict_is_unavailable_without_a_model():
         )
     assert response.status_code == 503
     assert "notebooks" in response.json()["detail"]
+
+
+# --- artifact loading -------------------------------------------------------
+
+def test_load_artifacts_reports_missing_files_as_not_found(tmp_path):
+    """The check runs before TensorFlow is imported, so it holds either way.
+
+    Keras raises ValueError for an absent .keras path, which reads as a corrupt
+    file rather than a missing one; callers then write an except clause that
+    does not cover it.
+    """
+    from src.models import load_artifacts
+
+    with pytest.raises(FileNotFoundError, match="no trained artifacts"):
+        load_artifacts("does_not_exist", models_dir=tmp_path)
+
+
+def test_app_starts_even_when_loading_the_model_blows_up(monkeypatch):
+    """Startup must degrade to an unhealthy service, never crash the process.
+
+    Regression: with TensorFlow installed and no trained model on disk, Keras
+    raised ValueError, the narrow except in the lifespan missed it, and every
+    request-level test failed because the app could not boot at all.
+    """
+    import api.main as main
+
+    def raise_like_keras(*args, **kwargs):
+        raise ValueError("File not found: filepath=models/lstm_fd001.keras")
+
+    monkeypatch.setattr(main.RULPredictor, "from_artifacts", staticmethod(raise_like_keras))
+    state["predictor"] = None
+
+    with TestClient(app) as test_client:
+        assert test_client.get("/health").json()["model_loaded"] is False
+        response = test_client.post("/predict", json={"engine_id": 1, "readings": [reading(1)]})
+
+    assert response.status_code == 503

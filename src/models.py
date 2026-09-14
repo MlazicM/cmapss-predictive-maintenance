@@ -155,10 +155,25 @@ def save_artifacts(model, scaler, name: str, models_dir: Path = MODELS_DIR) -> d
 
 
 def load_artifacts(name: str, models_dir: Path = MODELS_DIR):
-    """Load a model and its scaler saved by :func:`save_artifacts`."""
+    """Load a model and its scaler saved by :func:`save_artifacts`.
+
+    Missing files are reported as :class:`FileNotFoundError` before any
+    framework is imported. Keras raises ``ValueError`` for an absent ``.keras``
+    path, which reads as a corrupt-file error rather than a missing one and is
+    easy to forget when writing the caller's ``except`` clause.
+    """
+    model_path = models_dir / f"{name}.keras"
+    scaler_path = models_dir / f"{name}_scaler.joblib"
+    missing = [str(p) for p in (model_path, scaler_path) if not p.exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"no trained artifacts for '{name}': missing {', '.join(missing)}. "
+            "Run scripts/run_experiments.py --stage baselines to create them."
+        )
+
     import joblib
     import tensorflow as tf
 
-    model = tf.keras.models.load_model(models_dir / f"{name}.keras")
-    scaler = joblib.load(models_dir / f"{name}_scaler.joblib")
+    model = tf.keras.models.load_model(model_path)
+    scaler = joblib.load(scaler_path)
     return model, scaler
