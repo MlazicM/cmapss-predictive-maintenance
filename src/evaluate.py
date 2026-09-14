@@ -60,6 +60,54 @@ def format_report(name: str, report: dict[str, float]) -> str:
     )
 
 
+def interval_report(
+    y_true: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    point: np.ndarray | None = None,
+    nominal: float = 0.95,
+) -> dict[str, float]:
+    """Score a set of prediction intervals.
+
+    Coverage alone is not enough: an interval spanning 0-125 covers everything
+    and tells a planner nothing. Report it against mean width, and against the
+    interval score, which adds a penalty proportional to how far a missed
+    observation fell outside - the standard proper scoring rule for intervals,
+    so a model cannot win by being vague.
+    """
+    y_true = np.asarray(y_true, float)
+    lower = np.asarray(lower, float)
+    upper = np.asarray(upper, float)
+    alpha = 1.0 - nominal
+
+    covered = (y_true >= lower) & (y_true <= upper)
+    width = upper - lower
+    penalty = (2 / alpha) * (
+        np.maximum(lower - y_true, 0.0) + np.maximum(y_true - upper, 0.0)
+    )
+
+    report = {
+        "n": int(y_true.size),
+        "nominal": nominal,
+        "coverage": float(covered.mean()),
+        "mean_width": float(width.mean()),
+        "median_width": float(np.median(width)),
+        "interval_score": float((width + penalty).mean()),
+        "calibration_error": float(abs(covered.mean() - nominal)),
+    }
+    if point is not None:
+        report["rmse"] = rmse(y_true, point)
+    return report
+
+
+def format_interval_report(name: str, report: dict[str, float]) -> str:
+    return (
+        f"{name:<30} coverage={report['coverage']:6.1%} "
+        f"(nominal {report['nominal']:.0%})  width={report['mean_width']:6.1f}  "
+        f"interval_score={report['interval_score']:7.1f}"
+    )
+
+
 def label_distribution(y: np.ndarray) -> dict[str, float]:
     """Summarise a target vector.
 

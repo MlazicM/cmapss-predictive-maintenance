@@ -1,7 +1,14 @@
 import numpy as np
 import pytest
 
-from src.evaluate import label_distribution, nasa_score, r2, regression_report, rmse
+from src.evaluate import (
+    interval_report,
+    label_distribution,
+    nasa_score,
+    r2,
+    regression_report,
+    rmse,
+)
 
 
 def test_rmse_and_r2_match_known_values():
@@ -46,3 +53,44 @@ def test_label_distribution_exposes_a_collapsed_target():
 
     healthy = label_distribution(np.arange(0.0, 126.0))
     assert healthy["min"] == 0.0 and healthy["max"] == 125.0
+
+
+# --- interval metrics -------------------------------------------------------
+
+def test_interval_report_measures_coverage_against_width():
+    """Coverage alone is gameable; the report has to carry the width beside it."""
+    y_true = np.array([10.0, 20.0, 30.0, 40.0])
+    report = interval_report(y_true, y_true - 5.0, y_true + 5.0)
+
+    assert report["coverage"] == 1.0
+    assert report["mean_width"] == pytest.approx(10.0)
+    assert report["calibration_error"] == pytest.approx(0.05)
+
+
+def test_a_vacuous_interval_is_not_rewarded():
+    """0-125 covers everything and tells a planner nothing: the score must say so."""
+    y_true = np.array([10.0, 20.0, 30.0, 40.0])
+    vacuous = interval_report(y_true, np.zeros(4), np.full(4, 125.0))
+    tight = interval_report(y_true, y_true - 6.0, y_true + 6.0)
+
+    assert vacuous["coverage"] == tight["coverage"] == 1.0
+    assert tight["interval_score"] < vacuous["interval_score"]
+
+
+def test_interval_score_charges_for_missing_far():
+    """Missing by 50 cycles must cost more than missing by 1."""
+    y_true = np.array([100.0])
+    near = interval_report(y_true, np.array([0.0]), np.array([99.0]))
+    far = interval_report(y_true, np.array([0.0]), np.array([50.0]))
+
+    assert far["interval_score"] > near["interval_score"]
+    assert near["coverage"] == far["coverage"] == 0.0
+
+
+def test_interval_report_adds_point_error_when_given_a_point_estimate():
+    y_true = np.array([10.0, 20.0])
+    without = interval_report(y_true, y_true - 1.0, y_true + 1.0)
+    with_point = interval_report(y_true, y_true - 1.0, y_true + 1.0, point=y_true + 2.0)
+
+    assert "rmse" not in without
+    assert with_point["rmse"] == pytest.approx(2.0)
