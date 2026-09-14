@@ -1,0 +1,23 @@
+# Keep the build context small and the image free of things it must not carry.
+venv/
+.venv/
+.git/
+.github/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Large, reproducible, and not needed to serve a request.
+data/
+notebooks/
+results/
+tests/
+docs/
+
+# Artifacts are mounted at runtime, never baked into the image.
+models/
+*.keras
+*.joblib
+*.pkl
+*.h5

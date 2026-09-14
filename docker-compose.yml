@@ -1,0 +1,21 @@
+# Local run of the inference service.
+#
+#   docker compose up --build
+#   curl localhost:8000/health
+#
+# Train a model first (python scripts/run_experiments.py --stage calibration),
+# otherwise the service starts healthy but reports model_loaded=false.
+
+services:
+  api:
+    build: .
+    image: cmapss-rul:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      # Read-only: the service loads artifacts, it never writes them. Retraining
+      # on the host is picked up by restarting the container, with no rebuild.
+      - ./models:/app/models:ro
+    environment:
+      TF_CPP_MIN_LOG_LEVEL: "2"
+    restart: unless-stopped

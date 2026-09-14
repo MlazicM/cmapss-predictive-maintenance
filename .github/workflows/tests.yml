@@ -38,3 +38,52 @@ jobs:
               sys.exit("notebooks committed with outputs: " + ", ".join(dirty))
           print("notebooks clean")
           PY
+
+  docker:
+    # Builds the serving image and checks that it boots. The unit tests assert
+    # what the image is *asked* to contain (tests/test_serving_image.py); only an
+    # actual build catches a dependency that does not resolve or a COPY that
+    # misses a file, and a Dockerfile nobody builds is a Dockerfile that rots.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the inference image
+        run: docker build -t cmapss-rul:ci .
+
+      - name: Start the service with no model mounted
+        run: docker run -d --name rul -p 8000:8000 cmapss-rul:ci
+
+      - name: Wait for /health
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -sf localhost:8000/health > /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "service never became healthy"
+          docker logs rul
+          exit 1
+
+      - name: The degraded state must be reported, not crashed
+        run: |
+          # No artifacts are baked into the image, so a container started without
+          # a models/ mount has to answer /health with model_loaded=false and
+          # return 503 from /predict -- the documented behaviour, not a crash.
+          python -c "
+          import json, sys
+          body = json.load(open('/tmp/health.json'))
+          assert body['status'] == 'ok', body
+          assert body['model_loaded'] is False, body
+          print('degraded state reported correctly')
+          "
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/predict \
+            -H 'Content-Type: application/json' \
+            -d '{"engine_id": 1, "readings": []}')
+          test "$code" = "422" || { echo "expected 422 for an empty window, got $code"; exit 1; }
+
+      - name: Container logs
+        if: always()
+        run: docker logs rul
