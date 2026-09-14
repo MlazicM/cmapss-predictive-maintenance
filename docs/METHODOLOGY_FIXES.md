@@ -27,10 +27,20 @@ the retained rows carry raw RUL in `[0.7L, L]`, and the pipeline then applies
 0.7 * L >= 125    ⟺    L >= 179
 ```
 
-which covers most of the FD001 fleet (lifetimes run from ~128 to ~362 cycles).
-Even the shortest engine contributes no label below ~90. The model was fitted
-on an effectively constant target and then evaluated across the full 0–125
-range.
+Measured on the real FD001 training split (lifetimes: min 128, median 199,
+max 362):
+
+| | prefix-truncated (30%) | `subsample_engines` (30%) |
+|---|---|---|
+| label range | 90 – 125 | 0 – 125 |
+| distinct labels | 36 | 126 |
+| rows sitting exactly on the cap | **93.7%** | 6.5% |
+| engines whose labels are *all* 125 | **74%** | 0% |
+
+So 74 of every 100 engines contributed nothing but the constant 125, and 93.7%
+of all retained rows sat on the cap. Even the shortest engine contributed no
+label below 90. The model was fitted on an effectively constant target and then
+evaluated across the full 0–125 range.
 
 That is not data scarcity — it is a **truncated target distribution**. The
 resulting degradation said nothing about how much data the model had, so every
@@ -125,7 +135,10 @@ signal. Pushing single-regime FD001 through those statistics puts the
 fine-tuning and validation data off-distribution before training starts.
 
 **Fix.** `preprocessing.ConditionScaler` clusters the three setting columns into
-regimes and standardises within each; each fleet gets its own. After this,
+regimes and standardises within each; each fleet gets its own. Measured on the
+real FD002: the spread of per-regime feature means drops from 1.118 under a
+single global scaler to ~0 under per-regime scaling, i.e. the regime is fully
+removed from the features instead of dominating them. After this,
 "+2σ on sensor_4" means the same thing in both fleets — deviation from normal
 *for the current operating condition* — which is what makes pre-trained weights
 transferable at all.
@@ -170,8 +183,9 @@ for i in range(len(engine_data) - sequence_length):   # missing + 1
 ```
 
 An engine of length *n* yields *n − L + 1* windows, not *n − L*. Verified: 6
-rows with a window of 3 produced 3 windows instead of 4, and the discarded one
-is always the last — the lowest-RUL, closest-to-failure sample the engine has.
+rows with a window of 3 produced 3 windows instead of 4, and on the real FD001
+training split the corrected builder emits exactly 14,459 windows — 80 more
+than the old bound, one per engine. The discarded one is always the last — the lowest-RUL, closest-to-failure sample the engine has.
 One such sample lost per engine, in all three notebooks.
 
 The target was also taken at `i + sequence_length`, one cycle *past* the

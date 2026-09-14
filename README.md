@@ -19,7 +19,7 @@ End-to-end predictive maintenance system for estimating the **Remaining Useful L
 The evaluation protocol and two experiment designs were found to be unsound and have been rebuilt. **No metrics are quoted in this README until the notebooks have been re-run end to end under the corrected protocol.** The previously published table came from a setup where:
 
 - the reported score was computed on the same split that drove early stopping, and the official `test_FD001` / `RUL_FD001` files were loaded but never used;
-- the "limited data" scenario kept the first 30% of each engine's cycles, which after clipping at RUL 125 collapses **every** training label onto the cap for any engine living past ~179 cycles — the model was fitted on a near-constant target and scored across the full range;
+- the "limited data" scenario kept the first 30% of each engine's cycles, which after clipping at RUL 125 put **93.7% of retained rows exactly on the cap** and left 74% of engines with no label other than 125 — the model was fitted on a near-constant target and scored across the full range;
 - the augmentation experiment had no un-augmented control arm, added noise at 1% of one standard deviation, and built sliding windows across the seam between concatenated copies;
 - the transfer-learning run normalised single-condition FD001 with a scaler fitted on six-condition FD002, and compared a fully fine-tuned network against a frozen one as though they were the same run.
 
