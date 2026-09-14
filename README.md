@@ -14,16 +14,97 @@ End-to-end predictive maintenance system for estimating the **Remaining Useful L
 
 ---
 
-## ⚠️ Status: results are being re-measured
+## 📊 Results — FD001
 
-The evaluation protocol and two experiment designs were found to be unsound and have been rebuilt. **No metrics are quoted in this README until the notebooks have been re-run end to end under the corrected protocol.** The previously published table came from a setup where:
+Measured on the **official test split** (`test_FD001` + `RUL_FD001`), one prediction per engine, n = 100. Training and early stopping used disjoint splits of `train_FD001`; the test files were touched once, for this table.
 
-- the reported score was computed on the same split that drove early stopping, and the official `test_FD001` / `RUL_FD001` files were loaded but never used;
-- the "limited data" scenario kept the first 30% of each engine's cycles, which after clipping at RUL 125 put **93.7% of retained rows exactly on the cap** and left 74% of engines with no label other than 125 — the model was fitted on a near-constant target and scored across the full range;
-- the augmentation experiment had no un-augmented control arm, added noise at 1% of one standard deviation, and built sliding windows across the seam between concatenated copies;
-- the transfer-learning run normalised single-condition FD001 with a scaler fitted on six-condition FD002, and compared a fully fine-tuned network against a frozen one as though they were the same run.
+| Model | RMSE ↓ | MAE ↓ | R² ↑ | NASA score ↓ |
+|---|---|---|---|---|
+| XGBoost — per-cycle features | 18.19 | 12.56 | 0.79 | 1861.6 |
+| **XGBoost — rolling features** | **12.38** | **9.31** | **0.90** | **237.0** |
+| LSTM (30-cycle windows) | 14.84 | 11.33 | 0.86 | 440.1 |
 
-Details in [`docs/METHODOLOGY_FIXES.md`](docs/METHODOLOGY_FIXES.md). Everything is fixed in the code and covered by tests; what remains is the compute. Publishing numbers produced by a protocol I know to be broken would be worse than publishing none.
+Reproduce with `python scripts/run_experiments.py --stage baselines`.
+
+**The tree wins once it is given the same temporal information as the LSTM.** Adding rolling mean/std and drift cuts XGBoost's RMSE by 32% (18.19 → 12.38) and its NASA score by 87%, moving it past the sequence model on both. The earlier claim that the LSTM beat XGBoost by 24% compared it against the per-cycle variant, which structurally cannot represent a trend — that gap measured the input representation, not the model class.
+
+The asymmetric NASA score separates the two models much more sharply than RMSE does (237 vs 440, a 1.9x gap against 1.2x on RMSE), because it charges for *late* predictions — the ones where an engine fails before its scheduled maintenance. On this benchmark that is the number a maintenance planner would optimise.
+
+FD001 is the easiest C-MAPSS subset: one operating condition, one fault mode. A well-featurised tree being competitive here does not imply the same on the multi-condition subsets, which is what Phase 4 probes.
+
+### Label scarcity and augmentation — FD001
+
+Scarcity is simulated by dropping whole engines and keeping the survivors' full run-to-failure histories. Every arm is scored on the same official test split.
+
+| Training data | Engines | Sequences | RMSE ↓ | R² ↑ | NASA ↓ |
+|---|---|---|---|---|---|
+| 100% engines (reference) | 80 | 14,459 | 14.84 | 0.863 | 440 |
+| 50% engines | 40 | 6,890 | 16.00 | 0.841 | 483 |
+| 30% engines | 24 | 4,124 | 15.97 | 0.841 | 448 |
+| 15% engines | 12 | 2,044 | 20.76 | 0.732 | 843 |
+| *30% prefix (flawed design)* | *80* | *2,678* | *38.98* | *0.054* | *8,878* |
+| 30% engines + noise σ=0.05 | 24 | 16,496 | 16.49 | 0.831 | 437 |
+| 30% engines + noise σ=0.10 | 24 | 16,496 | 16.57 | 0.829 | 478 |
+| 30% engines + noise σ=0.25 | 24 | 16,496 | 16.40 | 0.832 | 410 |
+
+Reproduce with `python scripts/run_experiments.py --stage scarcity`.
+
+**About 24 run-to-failure engines are enough on FD001.** Going from 80 engines to 24 costs roughly 1.1 RMSE, and the 50% and 30% arms are indistinguishable from one another. Between 24 and 12 engines the model falls off a cliff: RMSE rises 30% and the NASA score nearly doubles. For an operator deciding how many engines to instrument, that break point is the number worth knowing.
+
+**The flawed design fails for a reason that has nothing to do with data volume.** The prefix arm trained on *all 80* engines and on *more* sequences than the 15% arm (2,678 against 2,044), yet scored 88% worse, at R² = 0.054 — a model that explains essentially nothing, because 93.7% of its labels were the same clipped constant. Its NASA score is 20x the reference. This also confirms where the previously published "limited data" figure of 37.62 RMSE came from: re-running that design measures 38.98.
+
+**Gaussian noise augmentation does not help.** Quadrupling the training set to 16,496 sequences left RMSE slightly *worse* than the un-augmented control at every noise level tested (16.40–16.57 against 15.97), with NASA scores scattered on both sides of it. Jitter perturbs existing degradation trajectories rather than creating new ones, and the model was not short of within-trajectory variation. This is a supportable negative result, which the earlier version could not claim: it had no control arm and added noise at 1% of one standard deviation.
+
+### Transfer learning FD002 → FD001
+
+Pre-trained on FD002 (260 engines, six operating regimes), fine-tuned on 30% of FD001's training engines (24 engines). Each fleet is standardised within its own operating regimes. All arms scored on the same official FD001 test split.
+
+| Arm | RMSE ↓ | MAE ↓ | R² ↑ | NASA ↓ |
+|---|---|---|---|---|
+| From scratch, 24 engines | 16.71 | 12.51 | 0.826 | 515 |
+| Zero-shot — FD002 only, never saw FD001 | 13.33 | 9.34 | 0.889 | 355 |
+| **Fine-tuned, LSTM frozen** | **13.07** | **9.20** | **0.894** | **302** |
+| Fine-tuned, full network | 13.37 | 9.46 | 0.889 | 327 |
+
+**How much target data transfer saves:**
+
+| FD001 training engines | Pre-trained RMSE ↓ | From scratch RMSE ↓ |
+|---|---|---|
+| 8 | 13.01 | 23.29 |
+| 16 | 13.08 | 19.93 |
+| 24 | 13.07 | 16.71 |
+| 40 | 13.07 | 16.78 |
+| 80 (all) | **12.94** | 14.84 |
+
+Reproduce with `python scripts/run_experiments.py --stage transfer`.
+
+**Transfer is the largest single win in this project.** At 24 target engines it cuts RMSE by 22% and the NASA score by 41% against training from scratch. Where notebook 03 showed that synthetic variation buys nothing, borrowing degradation patterns from another fleet buys a great deal.
+
+**The pre-trained curve is flat.** From 8 engines to 80, RMSE moves only between 12.94 and 13.08 — the amount of FD001 data barely matters once the FD002 representation is in place. Eight target engines with pre-training (13.01) beat eighty without it (14.84). For an operator, that is the difference between instrumenting a fleet and instrumenting a handful of aircraft.
+
+**Almost all of the gain is zero-shot.** The FD002 model scores 13.33 on FD001 without ever seeing a single target engine; fine-tuning adds only 0.26 RMSE on top. The win comes from the source model, not from adaptation — worth stating plainly, because "fine-tuning worked" would be the wrong lesson.
+
+**Freezing beats full fine-tuning** (13.07 vs 13.37), as expected when target data is scarce: fewer trainable parameters, less room to overfit 24 engines.
+
+Two things make this work that the earlier attempt lacked: each fleet is standardised *within its own operating regimes*, so a standardised sensor value means the same thing in both, and frozen versus full fine-tuning is run as a controlled comparison rather than two different setups reported as one. The previously published figure for this experiment was 24.70 RMSE.
+
+**Caveats.** FD002 is both larger (260 engines) and broader (six regimes, likely including conditions resembling FD001's single one), so part of this result is "more data from a superset domain" rather than transfer across a genuine gap. Single seed per arm. And the best LSTM here (12.94) still does not beat the windowed XGBoost baseline (12.38 RMSE, NASA 237) — transfer closes most of the gap to the tree without overturning it.
+
+### Predictive uncertainty
+
+MC dropout, 100 forward passes, on the 100 test engines:
+
+| | |
+|---|---|
+| 95% interval empirical coverage | **62%** |
+| Mean interval width | 19.0 cycles |
+| Mean absolute error | 9.2 cycles |
+| Mean absolute error on the widest half of intervals | 11.6 cycles |
+| Mean absolute error on the narrowest half | 6.1 cycles |
+
+**The intervals are badly overconfident but genuinely informative.** A nominal 95% band covers 62% of engines, because MC dropout captures model uncertainty and not observation noise — so the bounds must not be handed to a planner as calibrated probabilities. But the width tracks the error: engines with wider intervals are wrong by 11.6 cycles on average against 6.1 for narrow ones. The ranking is usable for triage — which engines deserve a human look — even though the stated confidence level is not. Calibrated intervals (quantile regression or a deep ensemble) are on the roadmap.
+
+
 
 ---
 
@@ -189,7 +270,9 @@ Training engines run to failure. Test engines are truncated before failure, with
 - [x] Regime-aware transfer learning (FD002 → FD001)
 - [x] MC-dropout uncertainty bounds
 - [x] FastAPI inference service
-- [ ] **Re-run all notebooks and publish the measured results**
+- [x] Measure and publish the FD001 baselines
+- [x] Measure and publish the scarcity and augmentation results
+- [x] Measure and publish the transfer-learning and uncertainty results
 - [ ] FD003/FD004 (multi-fault, multi-condition)
 - [ ] Calibrated intervals (quantile regression or deep ensembles)
 - [ ] Dockerised inference service
