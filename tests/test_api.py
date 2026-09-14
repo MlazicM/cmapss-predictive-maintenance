@@ -96,6 +96,148 @@ def test_lower_bound_never_goes_negative():
     assert result["lower_95"] >= 0.0
 
 
+def test_an_uncalibrated_predictor_says_so_in_every_response(predictor):
+    """The 62%-coverage band and a guaranteed one come back in the same fields.
+
+    The only thing separating them in the payload is this string, so a caller
+    that treats the bounds as a probability has to be able to see which it got.
+    """
+    result = predictor.predict([reading(c) for c in range(1, 41)], n_samples=10)
+    assert "UNCALIBRATED" in result["interval_method"]
+    assert result["nominal_coverage"] == 0.95
+
+
+def test_a_calibrated_predictor_uses_its_own_multiplier():
+    """The conformal multiplier must replace 1.96, not sit beside it unused."""
+    calibration = {"method": "mc_dropout_split_conformal", "mode": "adaptive",
+                   "nominal": 0.95, "multiplier": 6.0}
+    readings = [reading(c) for c in range(1, 41)]
+
+    plain = RULPredictor(StubModel(), StubScaler())
+    calibrated = RULPredictor(StubModel(), StubScaler(), calibration=calibration)
+
+    wide = calibrated.predict(readings, n_samples=30)
+    narrow = plain.predict(readings, n_samples=30)
+
+    assert wide["upper_95"] - wide["lower_95"] > narrow["upper_95"] - narrow["lower_95"]
+    assert "split-conformal (adaptive)" in wide["interval_method"]
+
+
+def test_absolute_mode_ignores_the_models_own_spread():
+    """In absolute mode the multiplier is a width in cycles, not a factor on std.
+
+    The readings put the stub's prediction near 60 so that the +/- 12 band sits
+    inside [0, 125] and is not clipped -- the width being tested is the one the
+    multiplier produced, not the one the cap left behind.
+    """
+    calibration = {"mode": "absolute", "nominal": 0.9, "multiplier": 12.0}
+    calibrated = RULPredictor(StubModel(noise=3.0), StubScaler(), calibration=calibration)
+
+    result = calibrated.predict(
+        [reading(c, value=160.0) for c in range(1, 41)], n_samples=30
+    )
+    assert result["predicted_rul"] == pytest.approx(60.0, abs=5.0)
+    assert result["upper_95"] - result["lower_95"] == pytest.approx(24.0)
+    assert result["nominal_coverage"] == 0.9
+
+
+def test_a_saturated_prediction_never_reports_a_bound_above_the_cap():
+    """Regression: clipping only the upper bound pushed it back over the cap."""
+    calibration = {"mode": "absolute", "nominal": 0.95, "multiplier": 10.0}
+    calibrated = RULPredictor(StubModel(noise=0.0), StubScaler(), calibration=calibration)
+
+    result = calibrated.predict(
+        [reading(c, value=100_000.0) for c in range(1, 41)], n_samples=5
+    )
+    assert result["predicted_rul"] == 125.0
+    assert result["upper_95"] == 125.0
+    assert result["lower_95"] <= result["upper_95"]
+
+
+class StubQuantileModel:
+    """Three heads, deliberately returned out of order."""
+
+    def __init__(self, outputs=(60.0, 40.0, 20.0)):
+        self.outputs = outputs
+        self.calls = 0
+
+    def __call__(self, window, training=False):
+        self.calls += 1
+        return np.array([list(self.outputs)])
+
+
+def test_quantile_predictor_uses_the_heads_as_the_interval():
+    calibration = {"method": "quantile_regression_cqr", "nominal": 0.95,
+                   "quantiles": [0.025, 0.5, 0.975], "offset": 0.0}
+    model = StubQuantileModel()
+    predictor = RULPredictor(model, StubScaler(), calibration=calibration)
+
+    result = predictor.predict([reading(c) for c in range(1, 41)], n_samples=50)
+
+    assert (result["lower_95"], result["predicted_rul"], result["upper_95"]) == (20.0, 40.0, 60.0)
+    assert model.calls == 1, "one forward pass, not a hundred: n_samples must be ignored"
+
+
+def test_quantile_predictor_reports_no_std():
+    """There is no MC-dropout spread here; inventing one would imply a normal."""
+    calibration = {"method": "quantile_regression_cqr", "offset": 0.0}
+    predictor = RULPredictor(StubQuantileModel(), StubScaler(), calibration=calibration)
+
+    result = predictor.predict([reading(c) for c in range(1, 41)])
+    assert result["std"] is None
+    assert "quantile regression" in result["interval_method"]
+
+
+def test_quantile_predictor_applies_the_cqr_offset():
+    calibration = {"method": "quantile_regression_cqr", "offset": 5.0}
+    predictor = RULPredictor(StubQuantileModel(), StubScaler(), calibration=calibration)
+
+    result = predictor.predict([reading(c) for c in range(1, 41)])
+    assert (result["lower_95"], result["upper_95"]) == (15.0, 65.0)
+
+
+def test_crossed_quantile_heads_never_produce_an_inverted_interval():
+    """The pinball loss does not constrain the heads to stay ordered."""
+    calibration = {"method": "quantile_regression_cqr", "offset": 0.0}
+    crossed = RULPredictor(
+        StubQuantileModel(outputs=(10.0, 55.0, 30.0)), StubScaler(), calibration=calibration
+    )
+
+    result = crossed.predict([reading(c) for c in range(1, 41)])
+    assert result["lower_95"] <= result["predicted_rul"] <= result["upper_95"]
+    assert (result["lower_95"], result["upper_95"]) == (10.0, 55.0)
+
+
+def test_the_point_estimate_is_never_negative():
+    """A model past end-of-life extrapolates below zero; -3 cycles is not an input."""
+    calibration = {"method": "quantile_regression_cqr", "offset": 0.0}
+    predictor = RULPredictor(
+        StubQuantileModel(outputs=(-5.0, -20.0, -40.0)), StubScaler(), calibration=calibration
+    )
+
+    result = predictor.predict([reading(c) for c in range(1, 41)])
+    assert result["predicted_rul"] == 0.0
+    assert result["lower_95"] == 0.0
+
+
+def test_health_reports_whether_the_interval_is_calibrated(client, predictor):
+    body = client.get("/health").json()
+    assert body["model_loaded"] is True
+    assert body["interval_calibrated"] is False, "the stub carries no calibration"
+
+
+def test_health_reports_no_model_name_when_nothing_is_loaded():
+    """A stale name beside model_loaded=false would misread as a working service."""
+    state["predictor"] = None
+    with TestClient(app) as test_client:
+        state["predictor"] = None
+        body = test_client.get("/health").json()
+
+    assert body["model_loaded"] is False
+    assert body["model_name"] is None
+    assert body["interval_calibrated"] is False
+
+
 # --- schemas --------------------------------------------------------------
 
 def test_out_of_order_cycles_are_rejected():
@@ -141,7 +283,9 @@ def test_predict_is_unavailable_without_a_model():
             "/predict", json={"engine_id": 1, "readings": [reading(1)]}
         )
     assert response.status_code == 503
-    assert "notebooks" in response.json()["detail"]
+    assert "run_experiments.py" in response.json()["detail"], (
+        "a 503 has to tell the operator how to produce the missing artifact"
+    )
 
 
 # --- artifact loading -------------------------------------------------------

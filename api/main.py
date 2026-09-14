@@ -18,24 +18,40 @@ logger = logging.getLogger(__name__)
 
 # Populated at startup; stays None when no artifacts exist so that /health can
 # report the situation instead of the process refusing to boot.
-state: dict[str, RULPredictor | None] = {"predictor": None}
+state: dict[str, RULPredictor | None] = {"predictor": None, "model_name": None}
 
-MODEL_NAME = "lstm_fd001"
+# Preference order, best first, and it is the order Phase 6 measured rather than
+# a guess: the quantile model had the best interval score and needs one forward
+# pass instead of a hundred; conformalised MC dropout is calibrated but wider;
+# the plain baseline has only the raw MC-dropout spread, which covers 63% of
+# engines at a nominal 95%. The last is a fallback, not an equivalent, so
+# /health reports which one is actually loaded.
+MODEL_NAMES = ("lstm_fd001_quantile", "lstm_fd001_conformal", "lstm_fd001")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load the model once at startup rather than per request."""
-    try:
-        state["predictor"] = RULPredictor.from_artifacts(MODEL_NAME)
-        logger.info("loaded artifacts for %s", MODEL_NAME)
-    except Exception as exc:  # noqa: BLE001
-        # Deliberately broad: every loading failure must degrade to a 503 rather
-        # than take the process down. A narrow tuple missed Keras's ValueError
-        # for an absent .keras path and crashed startup instead.
-        logger.warning("no model artifacts available (%s); /predict will return 503", exc)
+    """Load the best available model once at startup rather than per request."""
+    for name in MODEL_NAMES:
+        try:
+            predictor = RULPredictor.from_artifacts(name)
+        except Exception as exc:  # noqa: BLE001
+            # Deliberately broad: every loading failure must degrade to a 503
+            # rather than take the process down. A narrow tuple missed Keras's
+            # ValueError for an absent .keras path and crashed startup instead.
+            logger.warning("could not load artifacts for %s (%s)", name, exc)
+            continue
+
+        state["predictor"] = predictor
+        state["model_name"] = name
+        logger.info("loaded %s (%s)", name, predictor.interval_method)
+        break
+    else:
+        logger.warning("no model artifacts available; /predict will return 503")
+
     yield
     state["predictor"] = None
+    state["model_name"] = None
 
 
 app = FastAPI(
@@ -48,11 +64,16 @@ app = FastAPI(
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
+    predictor = state["predictor"]
     return HealthResponse(
         status="ok",
-        model_loaded=state["predictor"] is not None,
+        model_loaded=predictor is not None,
         sequence_length=SEQUENCE_LENGTH,
         expected_sensors=INFORMATIVE_SENSORS,
+        # Both derived from the predictor, so a name can never be reported for a
+        # model that is not actually loaded.
+        model_name=state["model_name"] if predictor is not None else None,
+        interval_calibrated=predictor is not None and predictor.calibration is not None,
     )
 
 
@@ -63,8 +84,9 @@ def predict(request: PredictionRequest) -> PredictionResponse:
         raise HTTPException(
             status_code=503,
             detail=(
-                "No trained model available. Run notebooks/02_baseline_models.ipynb "
-                "to train and persist one."
+                "No trained model available. Run "
+                "'python scripts/run_experiments.py --stage calibration' to train and "
+                "persist a calibrated one, or --stage baselines for an uncalibrated one."
             ),
         )
 
