@@ -1,0 +1,40 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # TensorFlow and XGBoost are deliberately not installed: src/models.py
+      # imports them lazily, so the whole data, preprocessing, evaluation and
+      # API surface is testable without a 600 MB download.
+      - name: Install test dependencies
+        run: pip install numpy pandas scikit-learn fastapi pydantic httpx pytest
+
+      - name: Run tests
+        run: pytest
+
+      - name: Check notebooks are committed without outputs
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          dirty = []
+          for path in pathlib.Path("notebooks").glob("*.ipynb"):
+              nb = json.loads(path.read_text())
+              if any(c.get("outputs") for c in nb["cells"]):
+                  dirty.append(str(path))
+          if dirty:
+              sys.exit("notebooks committed with outputs: " + ", ".join(dirty))
+          print("notebooks clean")
+          PY
