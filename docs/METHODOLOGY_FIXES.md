@@ -234,7 +234,54 @@ fresh callback per fit; every stochastic helper takes an explicit `seed`.
 
 ---
 
-## 9. Smaller items
+## 9. The uncertainty band was published but never checked
+
+**Severity: high — the headline safety claim was unverified.**
+
+MC dropout produced a standard deviation, the standard deviation was multiplied
+by 1.96, and the result was reported as a 95% confidence interval. Nothing ever
+asked how many engines those bounds actually contained.
+
+Measured on the 100 official test engines, a nominal 95% band covers **63%**.
+The Gaussian multiplier a calibrated interval would have needed is not 1.96 but
+**5.2**. So the published interval was roughly a 63% band wearing a 95% label —
+and the direction of the error is the dangerous one. A planner reading "95%"
+schedules to the upper bound and is surprised by a third of the fleet.
+
+The cause is not a coding mistake. Dropout spread is *model* uncertainty: it
+measures how much the network's answer moves when parts of it are switched off.
+It carries no information about observation noise or about the irreducible
+variance of when an engine actually fails, and there is no reason those should
+add up to the right number. A spread is not a probability until something
+checks it against outcomes.
+
+Two follow-on findings are worth recording because both contradict the obvious
+intuition:
+
+- **A deep ensemble is worse, not better.** Five independently seeded networks
+  agree with each other more than any of them agrees with reality: coverage
+  **42%**, against MC dropout's 63%. Averaging improves the point estimate
+  (RMSE 13.84 against 15.18) and simultaneously makes the uncertainty estimate
+  more overconfident. "More principled method" and "better calibrated" are
+  independent properties.
+- **The simple fix wins.** A network with a 2.5/50/97.5 head trained on the
+  pinball loss lands at 94% coverage untouched, with the best interval score of
+  any arm — and one forward pass instead of a hundred.
+
+**Fix.** A four-way split (fit / early stopping / conformal calibration /
+official test) so the calibration engines are held out from both training and
+model selection; `src/calibration.py` for split conformal, whose coverage
+guarantee is distribution-free and finite-sample; `src/models.py` for a quantile
+head and the pinball loss; and `evaluate.interval_report`, which reports
+coverage *beside mean width and the interval score*. Coverage alone is
+gameable — `[0, 125]` covers everything — so a proper scoring rule has to be the
+thing being compared. The API now names the method that produced its bounds in
+every response, because a calibrated band and an uncalibrated one are otherwise
+indistinguishable to the caller.
+
+---
+
+## 10. Smaller items
 
 | Item | Why it mattered |
 |---|---|
