@@ -32,16 +32,33 @@ The asymmetric NASA score separates the two models much more sharply than RMSE d
 
 FD001 is the easiest C-MAPSS subset: one operating condition, one fault mode. A well-featurised tree being competitive here does not imply the same on the multi-condition subsets, which is what Phase 4 probes.
 
+### Label scarcity and augmentation — FD001
+
+Scarcity is simulated by dropping whole engines and keeping the survivors' full run-to-failure histories. Every arm is scored on the same official test split.
+
+| Training data | Engines | Sequences | RMSE ↓ | R² ↑ | NASA ↓ |
+|---|---|---|---|---|---|
+| 100% engines (reference) | 80 | 14,459 | 14.84 | 0.863 | 440 |
+| 50% engines | 40 | 6,890 | 16.00 | 0.841 | 483 |
+| 30% engines | 24 | 4,124 | 15.97 | 0.841 | 448 |
+| 15% engines | 12 | 2,044 | 20.76 | 0.732 | 843 |
+| *30% prefix (flawed design)* | *80* | *2,678* | *38.98* | *0.054* | *8,878* |
+| 30% engines + noise σ=0.05 | 24 | 16,496 | 16.49 | 0.831 | 437 |
+| 30% engines + noise σ=0.10 | 24 | 16,496 | 16.57 | 0.829 | 478 |
+| 30% engines + noise σ=0.25 | 24 | 16,496 | 16.40 | 0.832 | 410 |
+
+Reproduce with `python scripts/run_experiments.py --stage scarcity`.
+
+**About 24 run-to-failure engines are enough on FD001.** Going from 80 engines to 24 costs roughly 1.1 RMSE, and the 50% and 30% arms are indistinguishable from one another. Between 24 and 12 engines the model falls off a cliff: RMSE rises 30% and the NASA score nearly doubles. For an operator deciding how many engines to instrument, that break point is the number worth knowing.
+
+**The flawed design fails for a reason that has nothing to do with data volume.** The prefix arm trained on *all 80* engines and on *more* sequences than the 15% arm (2,678 against 2,044), yet scored 88% worse, at R² = 0.054 — a model that explains essentially nothing, because 93.7% of its labels were the same clipped constant. Its NASA score is 20x the reference. This also confirms where the previously published "limited data" figure of 37.62 RMSE came from: re-running that design measures 38.98.
+
+**Gaussian noise augmentation does not help.** Quadrupling the training set to 16,496 sequences left RMSE slightly *worse* than the un-augmented control at every noise level tested (16.40–16.57 against 15.97), with NASA scores scattered on both sides of it. Jitter perturbs existing degradation trajectories rather than creating new ones, and the model was not short of within-trajectory variation. This is a supportable negative result, which the earlier version could not claim: it had no control arm and added noise at 1% of one standard deviation.
+
 ### Still to be measured
 
-Phases 3 and 4 — label scarcity, augmentation and transfer learning — have been rebuilt but not yet re-run. **No numbers are quoted for them** until they are. The previously published figures came from a setup where:
+Phase 4 — transfer learning from FD002 — has been rebuilt but not yet re-run, and no numbers are quoted for it. Its previously published figures came from a setup where single-condition FD001 was normalised with a scaler fitted on six-condition FD002, and where a fully fine-tuned network was compared against a frozen one as though the two were the same run. Details in [`docs/METHODOLOGY_FIXES.md`](docs/METHODOLOGY_FIXES.md).
 
-- the reported score was computed on the same split that drove early stopping, and the official `test_FD001` / `RUL_FD001` files were loaded but never used;
-- the "limited data" scenario kept the first 30% of each engine's cycles, which after clipping at RUL 125 put **93.7% of retained rows exactly on the cap** and left 74% of engines with no label other than 125 — the model was fitted on a near-constant target and scored across the full range;
-- the augmentation experiment had no un-augmented control arm, added noise at 1% of one standard deviation, and built sliding windows across the seam between concatenated copies;
-- the transfer-learning run normalised single-condition FD001 with a scaler fitted on six-condition FD002, and compared a fully fine-tuned network against a frozen one as though they were the same run.
-
-Details in [`docs/METHODOLOGY_FIXES.md`](docs/METHODOLOGY_FIXES.md). All four are fixed in code and covered by tests; what remains is the compute.
 
 ---
 
@@ -208,7 +225,8 @@ Training engines run to failure. Test engines are truncated before failure, with
 - [x] MC-dropout uncertainty bounds
 - [x] FastAPI inference service
 - [x] Measure and publish the FD001 baselines
-- [ ] **Re-run the scarcity and transfer phases and publish those results**
+- [x] Measure and publish the scarcity and augmentation results
+- [ ] **Re-run the transfer phase and publish those results**
 - [ ] FD003/FD004 (multi-fault, multi-condition)
 - [ ] Calibrated intervals (quantile regression or deep ensembles)
 - [ ] Dockerised inference service
